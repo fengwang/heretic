@@ -35,6 +35,11 @@ FLOAT8_DTYPES: set[torch.dtype] = {
     if dtype is not None
 }
 
+FLOAT8_INFO: dict[torch.dtype, torch.finfo] = {
+    dtype: torch.finfo(dtype)
+    for dtype in FLOAT8_DTYPES
+}
+
 
 @dataclass
 class AbliterationParameters:
@@ -279,6 +284,14 @@ class Model:
                         matrix.sub_(update)
                     else:
                         matrix_for_update.sub_(update)
+
+                        finfo = FLOAT8_INFO.get(matrix_dtype)
+                        if finfo is not None:
+                            matrix_for_update.clamp_(
+                                min=finfo.min,
+                                max=finfo.max,
+                            )
+
                         matrix.copy_(
                             matrix_for_update.to(
                                 dtype=matrix_dtype,
