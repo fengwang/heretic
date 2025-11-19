@@ -24,6 +24,18 @@ from .config import Settings
 from .utils import batchify, empty_cache, print
 
 
+FLOAT8_DTYPES: set[torch.dtype] = {
+    dtype
+    for dtype in (
+        getattr(torch, "float8_e4m3fn", None),
+        getattr(torch, "float8_e4m3fnuz", None),
+        getattr(torch, "float8_e5m2", None),
+        getattr(torch, "float8_e5m2fnuz", None),
+    )
+    if dtype is not None
+}
+
+
 @dataclass
 class AbliterationParameters:
     max_weight: float
@@ -237,13 +249,41 @@ class Model:
                 projector = torch.outer(
                     layer_refusal_direction,
                     layer_refusal_direction,
-                ).to(self.model.dtype)
+                ).to(torch.float32)
 
                 for matrix in matrices:
-                    # Ensure projector is on the same device as the matrix for multi-GPU support.
-                    device_projector = projector.to(matrix.device)
-                    # In-place subtraction is safe as we're not using Autograd.
-                    matrix.sub_(weight * (device_projector @ matrix))
+                    matrix_device = matrix.device
+                    matrix_dtype = matrix.dtype
+                    compute_dtype = (
+                        torch.float32
+                        if matrix_dtype in FLOAT8_DTYPES
+                        else matrix_dtype
+                    )
+
+                    # Use the original dtype whenever possible to avoid extra casting, but
+                    # fall back to float32 for float8 weights where GEMM kernels need it.
+                    projector_for_matrix = projector.to(
+                        matrix_device,
+                        dtype=compute_dtype,
+                    )
+
+                    if compute_dtype == matrix_dtype:
+                        matrix_for_update = matrix
+                    else:
+                        matrix_for_update = matrix.to(dtype=compute_dtype)
+
+                    update = weight * (projector_for_matrix @ matrix_for_update)
+
+                    if compute_dtype == matrix_dtype:
+                        # In-place subtraction is safe as we're not using Autograd.
+                        matrix.sub_(update)
+                    else:
+                        matrix_for_update.sub_(update)
+                        matrix.copy_(
+                            matrix_for_update.to(
+                                dtype=matrix_dtype,
+                            )
+                        )
 
     def get_chat(self, prompt: str) -> list[dict[str, str]]:
         return [
