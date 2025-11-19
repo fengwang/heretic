@@ -56,6 +56,11 @@ heretic Qwen/Qwen3-4B-Instruct-2507
 ```
 
 Replace `Qwen/Qwen3-4B-Instruct-2507` with whatever model you want to decensor.
+If you have already downloaded a model locally, pass the path to the checkpoint
+directory instead (for example,
+`heretic /home/username/heretic/data/huggingface/model/DeepSeek-R1-0528-Qwen3-8B`).
+Heretic will attempt to load the model from disk first and only fall back to
+the Hugging Face Hub if the path does not exist.
 
 The process is fully automatic and does not require configuration; however,
 Heretic has a variety of configuration parameters that can be changed for
