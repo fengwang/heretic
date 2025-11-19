@@ -4,6 +4,7 @@
 import math
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import torch
@@ -34,12 +35,22 @@ class AbliterationParameters:
 class Model:
     def __init__(self, settings: Settings):
         self.settings = settings
+        self._model_source: str
+        self._model_is_local: bool
+        self._set_model_source()
 
         print()
         print(f"Loading model [bold]{settings.model}[/]...")
+        if self._model_is_local:
+            print(f"* Found local checkpoint at [bold]{self._model_source}[/]")
+
+        tokenizer_kwargs: dict[str, Any] = {}
+        if self._model_is_local:
+            tokenizer_kwargs["local_files_only"] = True
 
         self.tokenizer: PreTrainedTokenizerBase = AutoTokenizer.from_pretrained(
-            settings.model
+            self._model_source,
+            **tokenizer_kwargs,
         )
 
         # Fallback for tokenizers that don't declare a special pad token.
@@ -54,9 +65,10 @@ class Model:
 
             try:
                 self.model = AutoModelForCausalLM.from_pretrained(
-                    settings.model,
+                    self._model_source,
                     dtype=dtype,
                     device_map=settings.device_map,
+                    **({"local_files_only": True} if self._model_is_local else {}),
                 )
 
                 # A test run can reveal dtype-related problems such as the infamous
@@ -88,12 +100,27 @@ class Model:
         # Purge existing model object from memory to make space.
         self.model = None
         empty_cache()
+        self._set_model_source()
+
+        load_kwargs: dict[str, Any] = {}
+        if self._model_is_local:
+            load_kwargs["local_files_only"] = True
 
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.settings.model,
+            self._model_source,
             dtype=dtype,
             device_map=self.settings.device_map,
+            **load_kwargs,
         )
+
+    def _set_model_source(self):
+        path = Path(self.settings.model).expanduser()
+        if path.exists():
+            self._model_source = str(path)
+            self._model_is_local = True
+        else:
+            self._model_source = self.settings.model
+            self._model_is_local = False
 
     def get_layers(self) -> ModuleList:
         # Most multimodal models.
