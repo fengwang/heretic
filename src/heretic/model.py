@@ -13,6 +13,7 @@ from torch import LongTensor, Tensor
 from torch.nn import ModuleList
 from transformers import (
     AutoModelForCausalLM,
+    AutoModelForVision2Seq,
     AutoTokenizer,
     BatchEncoding,
     PreTrainedTokenizerBase,
@@ -77,28 +78,50 @@ class Model:
 
         self.model = None
 
+        model_load_kwargs: dict[str, Any] = {
+            "device_map": settings.device_map,
+        }
+        if self._model_is_local:
+            model_load_kwargs["local_files_only"] = True
+
+        loader_candidates = (
+            ("AutoModelForCausalLM", AutoModelForCausalLM, True),
+            ("AutoModelForVision2Seq", AutoModelForVision2Seq, False),
+        )
+
         for dtype in settings.dtypes:
             print(f"* Trying dtype [bold]{dtype}[/]... ", end="")
 
-            try:
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self._model_source,
-                    dtype=dtype,
-                    device_map=settings.device_map,
-                    **({"local_files_only": True} if self._model_is_local else {}),
-                )
+            loader_errors: list[str] = []
+            active_loader_name: str | None = None
 
-                # A test run can reveal dtype-related problems such as the infamous
-                # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
-                # (https://github.com/meta-llama/llama/issues/380).
-                self.generate(["Test"], max_new_tokens=1)
-            except Exception as error:
-                self.model = None
-                empty_cache()
-                print(f"[red]Failed[/] ({error})")
+            for loader_name, loader_class, run_self_test in loader_candidates:
+                try:
+                    self.model = loader_class.from_pretrained(
+                        self._model_source,
+                        dtype=dtype,
+                        **model_load_kwargs,
+                    )
+
+                    if run_self_test:
+                        # A test run can reveal dtype-related problems such as the infamous
+                        # "RuntimeError: probability tensor contains either `inf`, `nan` or element < 0"
+                        # (https://github.com/meta-llama/llama/issues/380).
+                        self.generate(["Test"], max_new_tokens=1)
+                except Exception as error:
+                    self.model = None
+                    empty_cache()
+                    loader_errors.append(f"{loader_name}: {error}")
+                    continue
+
+                active_loader_name = loader_name
+                break
+
+            if self.model is None:
+                print(f"[red]Failed[/] ({'; '.join(loader_errors)})")
                 continue
 
-            print("[green]Ok[/]")
+            print(f"[green]Ok[/] ({active_loader_name})")
             break
 
         if self.model is None:
@@ -113,6 +136,7 @@ class Model:
 
     def reload_model(self):
         dtype = self.model.dtype
+        model_class = self.model.__class__
 
         # Purge existing model object from memory to make space.
         self.model = None
@@ -123,7 +147,7 @@ class Model:
         if self._model_is_local:
             load_kwargs["local_files_only"] = True
 
-        self.model = AutoModelForCausalLM.from_pretrained(
+        self.model = model_class.from_pretrained(
             self._model_source,
             dtype=dtype,
             device_map=self.settings.device_map,
